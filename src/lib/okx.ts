@@ -1,6 +1,6 @@
 import { execSync } from "child_process";
 
-const HOME = "/opt/data/home";
+const HOME = process.env.OKX_HOME || process.env.HOME || "/tmp";
 const ENV = { ...process.env, HOME, PATH: `${HOME}/.npm-global/bin:${process.env.PATH}` };
 
 export function okxCommand(args: string[]): string {

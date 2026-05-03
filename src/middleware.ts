@@ -18,10 +18,9 @@ export function middleware(request: NextRequest) {
   if (authHeader?.startsWith("Basic ")) {
     const decoded = atob(authHeader.slice(6));
     const [user, pass] = decoded.split(":");
-    if (
-      user === (process.env.DASHBOARD_USER || "admin") &&
-      pass === (process.env.DASHBOARD_PASS || "okx2026")
-    ) {
+    const expectedUser = process.env.DASHBOARD_USER;
+    const expectedPass = process.env.DASHBOARD_PASS;
+    if (expectedUser && expectedPass && user === expectedUser && pass === expectedPass) {
       const response = NextResponse.next();
       response.cookies.set("dashboard-auth", "authenticated", {
         httpOnly: true,
