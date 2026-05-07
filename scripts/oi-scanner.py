@@ -27,8 +27,6 @@ def load_config() -> dict:
         "MIN_VOL_USD": 5_000_000,
         "TOP_N": 10,
         "SCAN_INTERVAL": 300,
-        "TELEGRAM_BOT_TOKEN": "",
-        "TELEGRAM_CHAT_ID": "",
     }
     if CONFIG_FILE.exists():
         for line in CONFIG_FILE.read_text().splitlines():
@@ -47,6 +45,21 @@ def load_config() -> dict:
     return defaults
 
 
+def load_env_file(path: str) -> dict:
+    """从任意 .env 文件加载键值对"""
+    result = {}
+    p = Path(path)
+    if p.exists():
+        for line in p.read_text().splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if "=" in line:
+                key, val = line.split("=", 1)
+                result[key.strip()] = val.strip().split("#")[0].strip()
+    return result
+
+
 cfg = load_config()
 OI_CHANGE_MIN = cfg["OI_CHANGE_MIN"]
 PRICE_CHANGE_MAX = cfg["PRICE_CHANGE_MAX"]
@@ -54,8 +67,11 @@ MIN_OI_USD = int(cfg["MIN_OI_USD"])
 MIN_VOL_USD = int(cfg["MIN_VOL_USD"])
 TOP_N = cfg["TOP_N"]
 SCAN_INTERVAL = int(cfg["SCAN_INTERVAL"])
-TG_TOKEN = cfg["TELEGRAM_BOT_TOKEN"]
-TG_CHAT_ID = cfg["TELEGRAM_CHAT_ID"]
+
+# Telegram 配置从 /opt/data/.env 读取
+_main_env = load_env_file("/opt/data/.env")
+TG_TOKEN = _main_env.get("TELEGRAM_BOT_TOKEN", "")
+TG_CHAT_ID = _main_env.get("TELEGRAM_HOME_CHANNEL", "")
 
 HOME = os.environ.get("HOME", "/opt/data/home")
 OKX_CMD = f"HOME={HOME} okx"
