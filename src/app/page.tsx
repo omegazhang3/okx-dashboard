@@ -5,6 +5,7 @@ import TechnicalAnalysis from "@/components/TechnicalAnalysis";
 import GridBot from "@/components/GridBot";
 import TradeHistory from "@/components/TradeHistory";
 import AIReport from "@/components/AIReport";
+import OIScanner from "@/components/OIScanner";
 
 export default function Dashboard() {
   return (
@@ -50,6 +51,11 @@ export default function Dashboard() {
           <GridBot />
         </section>
       </div>
+
+      {/* OI Scanner */}
+      <section className="mb-6">
+        <OIScanner />
+      </section>
 
       {/* AI Report */}
       <section className="mb-6">
