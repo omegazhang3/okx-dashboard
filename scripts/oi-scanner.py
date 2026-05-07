@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """
 OI 异动扫描器 — 找出「持仓量上升 + 价格横盘」的潜在待涨币
-每次运行扫描一次，跟踪上次扫描结果对比价格变化
+纯脚本运行，有信号时直接推送 Telegram，无信号时静默退出
 配置文件: /opt/data/scripts/oi-scanner.env
 """
 
 import subprocess
 import json
 import os
+import urllib.request
+import urllib.parse
 from datetime import datetime
 from pathlib import Path
 
@@ -25,6 +27,8 @@ def load_config() -> dict:
         "MIN_VOL_USD": 5_000_000,
         "TOP_N": 10,
         "SCAN_INTERVAL": 300,
+        "TELEGRAM_BOT_TOKEN": "",
+        "TELEGRAM_CHAT_ID": "",
     }
     if CONFIG_FILE.exists():
         for line in CONFIG_FILE.read_text().splitlines():
@@ -34,7 +38,7 @@ def load_config() -> dict:
             if "=" in line:
                 key, val = line.split("=", 1)
                 key = key.strip()
-                val = val.strip().split("#")[0].strip()  # 去掉行内注释
+                val = val.strip().split("#")[0].strip()
                 if key in defaults:
                     try:
                         defaults[key] = type(defaults[key])(val)
@@ -50,10 +54,33 @@ MIN_OI_USD = int(cfg["MIN_OI_USD"])
 MIN_VOL_USD = int(cfg["MIN_VOL_USD"])
 TOP_N = cfg["TOP_N"]
 SCAN_INTERVAL = int(cfg["SCAN_INTERVAL"])
+TG_TOKEN = cfg["TELEGRAM_BOT_TOKEN"]
+TG_CHAT_ID = cfg["TELEGRAM_CHAT_ID"]
 
 HOME = os.environ.get("HOME", "/opt/data/home")
 OKX_CMD = f"HOME={HOME} okx"
 STATE_FILE = "/tmp/oi-scanner-state.json"
+
+
+def send_telegram(text: str) -> bool:
+    """通过 Telegram Bot API 直接发送消息"""
+    if not TG_TOKEN or not TG_CHAT_ID:
+        print("Telegram not configured, skipping push")
+        return False
+    url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
+    data = urllib.parse.urlencode({
+        "chat_id": TG_CHAT_ID,
+        "text": text,
+        "parse_mode": "Markdown",
+    }).encode()
+    try:
+        req = urllib.request.Request(url, data=data, method="POST")
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            result = json.loads(resp.read())
+            return result.get("ok", False)
+    except Exception as e:
+        print(f"Telegram send failed: {e}")
+        return False
 
 
 def run_okx(args: str) -> str:
@@ -142,7 +169,7 @@ def filter_signal(data: list) -> list:
         price_flat = abs(row["pxChgPct"]) < PRICE_CHANGE_MAX
 
         if oi_up and price_flat:
-            row["signal"] = "OI↑ + 横盘"
+            row["signal"] = "OI up + flat"
             row["score"] = row["deltaOiPct"] / max(abs(row["pxChgPct"]), 0.1)
             results.append(row)
 
@@ -165,7 +192,8 @@ def format_report(results_1d: list, results_4h: list, prev: dict) -> str:
     """生成报告（只输出双重确认，附带上次对比）"""
     now = datetime.now(tz=None).strftime("%Y-%m-%d %H:%M UTC")
     lines = [
-        f"🔍 **OI 异动扫描** — {now}\n",
+        f"🔍 *OI 异动预警* — {now}",
+        "",
     ]
 
     # 同时出现在1D和4H的币（双重确认）
@@ -174,7 +202,7 @@ def format_report(results_1d: list, results_4h: list, prev: dict) -> str:
         both = {r["instId"] for r in results_1d} & {r["instId"] for r in results_4h}
 
     if both:
-        lines.append("🔥 **双重确认（1D + 4H 同时触发）**")
+        lines.append("🔥 *双重确认（1D + 4H 同时触发）*")
         for instId in both:
             r = next(x for x in results_1d if x["instId"] == instId)
             fr = r["fundingRate"]
@@ -197,18 +225,19 @@ def format_report(results_1d: list, results_4h: list, prev: dict) -> str:
                     trend = f"📉 ${price_diff:.4f} ({price_diff_pct:.2f}%)"
 
                 oi_trend = f"+{oi_diff:.1f}%" if oi_diff >= 0 else f"{oi_diff:.1f}%"
-                delta_str = f"\n     📊 较上次: {trend} | OI变化: {oi_trend}"
+                delta_str = f"\n     📊 较上次: {trend} | OI: {oi_trend}"
             else:
                 delta_str = "\n     📊 首次出现"
 
             lines.append(
-                f"  ⚡ **{r['instId']}** — ${r['last']:.4f}\n"
+                f"\n  ⚡ *{r['instId']}* — ${r['last']:.4f}\n"
                 f"     OI: {format_number(r['oiUsd'])} ({r['deltaOiPct']:+.1f}%)\n"
                 f"     价格: {r['pxChgPct']:+.2f}% | 量: {format_number(r['volUsd24h'])}\n"
                 f"     资金费率: {fr_icon} {fr*100:.4f}%{delta_str}"
             )
     else:
-        lines.append("本轮无双重确认信号")
+        # 无双重确认信号，返回空
+        return ""
 
     return "\n".join(lines)
 
@@ -261,7 +290,16 @@ def main():
 
     # 生成报告
     report = format_report(results_1d, results_4h, prev)
-    print(report)
+
+    # 有信号才推送，无信号静默
+    if report:
+        ok = send_telegram(report)
+        if ok:
+            print(f"[{datetime.now()}] Pushed to Telegram")
+        else:
+            print(report)  # 推送失败则输出到 stdout
+    else:
+        print(f"[{datetime.now()}] No dual-confirmed signals, skipping")
 
     # 保存本次结果供下次对比
     save_state(results_1d, results_4h)
