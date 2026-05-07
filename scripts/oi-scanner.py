@@ -1,21 +1,55 @@
 #!/usr/bin/env python3
 """
 OI 异动扫描器 — 找出「持仓量上升 + 价格横盘」的潜在待涨币
-每5分钟运行一次，跟踪上次扫描结果对比价格变化
+每次运行扫描一次，跟踪上次扫描结果对比价格变化
+配置文件: /opt/data/scripts/oi-scanner.env
 """
 
 import subprocess
 import json
 import os
 from datetime import datetime
+from pathlib import Path
 
-# ============ 参数配置 ============
-OI_CHANGE_MIN = 10       # OI 24h变化% 最小阈值
-PRICE_CHANGE_MAX = 5.0   # 价格24h变化% 最大阈值（横盘定义）
-MIN_OI_USD = 20_000_000  # 最小OI金额（过滤小币）
-MIN_VOL_USD = 5_000_000  # 最小24h成交量
-TOP_N = 10               # 最多显示前N个
-# =================================
+# ============ 配置加载 ============
+SCRIPT_DIR = Path(__file__).parent
+CONFIG_FILE = SCRIPT_DIR / "oi-scanner.env"
+
+
+def load_config() -> dict:
+    """从 .env 文件加载配置"""
+    defaults = {
+        "OI_CHANGE_MIN": 10,
+        "PRICE_CHANGE_MAX": 5.0,
+        "MIN_OI_USD": 20_000_000,
+        "MIN_VOL_USD": 5_000_000,
+        "TOP_N": 10,
+        "SCAN_INTERVAL": 300,
+    }
+    if CONFIG_FILE.exists():
+        for line in CONFIG_FILE.read_text().splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if "=" in line:
+                key, val = line.split("=", 1)
+                key = key.strip()
+                val = val.strip().split("#")[0].strip()  # 去掉行内注释
+                if key in defaults:
+                    try:
+                        defaults[key] = type(defaults[key])(val)
+                    except (ValueError, TypeError):
+                        pass
+    return defaults
+
+
+cfg = load_config()
+OI_CHANGE_MIN = cfg["OI_CHANGE_MIN"]
+PRICE_CHANGE_MAX = cfg["PRICE_CHANGE_MAX"]
+MIN_OI_USD = int(cfg["MIN_OI_USD"])
+MIN_VOL_USD = int(cfg["MIN_VOL_USD"])
+TOP_N = cfg["TOP_N"]
+SCAN_INTERVAL = int(cfg["SCAN_INTERVAL"])
 
 HOME = os.environ.get("HOME", "/opt/data/home")
 OKX_CMD = f"HOME={HOME} okx"
@@ -179,7 +213,41 @@ def format_report(results_1d: list, results_4h: list, prev: dict) -> str:
     return "\n".join(lines)
 
 
+def should_run() -> bool:
+    """检查是否到了扫描时间"""
+    if not os.path.exists(STATE_FILE):
+        return True
+    try:
+        with open(STATE_FILE, "r") as f:
+            state = json.load(f)
+        last_ts = state.get("_last_scan")
+        if not last_ts:
+            return True
+        elapsed = (datetime.now(tz=None) - datetime.fromisoformat(last_ts)).total_seconds()
+        return elapsed >= SCAN_INTERVAL
+    except (json.JSONDecodeError, IOError, ValueError):
+        return True
+
+
+def mark_scanned():
+    """记录本次扫描时间"""
+    state = {}
+    if os.path.exists(STATE_FILE):
+        try:
+            with open(STATE_FILE, "r") as f:
+                state = json.load(f)
+        except (json.JSONDecodeError, IOError):
+            pass
+    state["_last_scan"] = datetime.now(tz=None).isoformat()
+    with open(STATE_FILE, "w") as f:
+        json.dump(state, f, indent=2)
+
+
 def main():
+    # 检查是否到了扫描时间
+    if not should_run():
+        return
+
     # 加载上次扫描结果
     prev = load_prev_state()
 
@@ -197,6 +265,7 @@ def main():
 
     # 保存本次结果供下次对比
     save_state(results_1d, results_4h)
+    mark_scanned()
 
 
 if __name__ == "__main__":
