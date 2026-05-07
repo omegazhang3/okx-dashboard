@@ -107,38 +107,6 @@ def format_report(results_1d: list, results_4h: list) -> str:
         f"最小OI: {format_number(MIN_OI_USD)} | 最小成交量: {format_number(MIN_VOL_USD)}\n",
     ]
 
-    # 日线信号
-    lines.append("📅 **1D 信号（日线级别）**")
-    if not results_1d:
-        lines.append("  暂无符合条件的币种\n")
-    else:
-        for i, r in enumerate(results_1d, 1):
-            fr = r["fundingRate"]
-            fr_icon = "🟢" if fr < 0 else "⚪" if fr < 0.01 else "🔴"
-            lines.append(
-                f"  {i}. **{r['instId']}** — ${r['last']:.4f}\n"
-                f"     OI: {format_number(r['oiUsd'])} ({r['deltaOiPct']:+.1f}%)\n"
-                f"     价格: {r['pxChgPct']:+.2f}% | 量: {format_number(r['volUsd24h'])}\n"
-                f"     资金费率: {fr_icon} {fr*100:.4f}%"
-            )
-        lines.append("")
-
-    # 4H信号
-    lines.append("⏰ **4H 信号（短线级别）**")
-    if not results_4h:
-        lines.append("  暂无符合条件的币种\n")
-    else:
-        for i, r in enumerate(results_4h, 1):
-            fr = r["fundingRate"]
-            fr_icon = "🟢" if fr < 0 else "⚪" if fr < 0.01 else "🔴"
-            lines.append(
-                f"  {i}. **{r['instId']}** — ${r['last']:.4f}\n"
-                f"     OI: {format_number(r['oiUsd'])} ({r['deltaOiPct']:+.1f}%)\n"
-                f"     价格: {r['pxChgPct']:+.2f}% | 量: {format_number(r['volUsd24h'])}\n"
-                f"     资金费率: {fr_icon} {fr*100:.4f}%"
-            )
-        lines.append("")
-
     # 同时出现在1D和4H的币（双重确认）
     both = set()
     if results_1d and results_4h:
@@ -149,11 +117,18 @@ def format_report(results_1d: list, results_4h: list) -> str:
     if both:
         lines.append("🔥 **双重确认（1D + 4H 同时触发）**")
         for instId in both:
-            lines.append(f"  ⚡ **{instId}** — 日线+短线共振，重点关注！")
-        lines.append("")
-
-    lines.append("💡 OI↑ + 价格横盘 = 资金在悄悄建仓，可能即将变盘")
-    lines.append("⚠️ 仅供参考，不构成投资建议")
+            # 取1D的数据作为主数据
+            r = next(x for x in results_1d if x["instId"] == instId)
+            fr = r["fundingRate"]
+            fr_icon = "🟢" if fr < 0 else "⚪" if fr < 0.01 else "🔴"
+            lines.append(
+                f"  ⚡ **{r['instId']}** — ${r['last']:.4f}\n"
+                f"     OI: {format_number(r['oiUsd'])} ({r['deltaOiPct']:+.1f}%)\n"
+                f"     价格: {r['pxChgPct']:+.2f}% | 量: {format_number(r['volUsd24h'])}\n"
+                f"     资金费率: {fr_icon} {fr*100:.4f}%"
+            )
+    else:
+        lines.append("本轮无双重确认信号")
 
     return "\n".join(lines)
 
