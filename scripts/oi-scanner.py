@@ -313,7 +313,7 @@ def main():
         if ok:
             print(f"[{datetime.now()}] Pushed to Telegram")
         else:
-            print(report)  # 推送失败则输出到 stdout
+            print(report)
     else:
         print(f"[{datetime.now()}] No dual-confirmed signals, skipping")
 
