@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 OI 异动扫描器 — 找出「持仓量上升 + 价格横盘」的潜在待涨币
-每5分钟运行一次，结果推送到 Telegram
+每5分钟运行一次，跟踪上次扫描结果对比价格变化
 """
 
 import subprocess
@@ -19,6 +19,7 @@ TOP_N = 10               # 最多显示前N个
 
 HOME = os.environ.get("HOME", "/opt/data/home")
 OKX_CMD = f"HOME={HOME} okx"
+STATE_FILE = "/tmp/oi-scanner-state.json"
 
 
 def run_okx(args: str) -> str:
@@ -28,19 +29,48 @@ def run_okx(args: str) -> str:
     return result.stdout
 
 
+def load_prev_state() -> dict:
+    """加载上次扫描结果"""
+    if os.path.exists(STATE_FILE):
+        try:
+            with open(STATE_FILE, "r") as f:
+                return json.load(f)
+        except (json.JSONDecodeError, IOError):
+            pass
+    return {}
+
+
+def save_state(results_1d: list, results_4h: list):
+    """保存本次扫描结果"""
+    both = set()
+    if results_1d and results_4h:
+        both = {r["instId"] for r in results_1d} & {r["instId"] for r in results_4h}
+
+    state = {}
+    for r in results_1d:
+        if r["instId"] in both:
+            state[r["instId"]] = {
+                "price": r["last"],
+                "oiUsd": r["oiUsd"],
+                "deltaOiPct": r["deltaOiPct"],
+                "timestamp": datetime.now(tz=None).isoformat(),
+            }
+
+    with open(STATE_FILE, "w") as f:
+        json.dump(state, f, indent=2)
+
+
 def parse_oi_change_table(output: str) -> list:
     """解析 oi-change 表格输出"""
     lines = output.strip().split("\n")
     data = []
     in_table = False
-    headers = []
 
     for line in lines:
         line = line.strip()
         if not line or line.startswith("Environment") or line.startswith("---"):
             continue
         if line.startswith("rank"):
-            headers = line.split()
             in_table = True
             continue
         if in_table and line[0].isdigit():
@@ -82,7 +112,6 @@ def filter_signal(data: list) -> list:
             row["score"] = row["deltaOiPct"] / max(abs(row["pxChgPct"]), 0.1)
             results.append(row)
 
-    # 按 score 降序排列
     results.sort(key=lambda x: x["score"], reverse=True)
     return results[:TOP_N]
 
@@ -98,34 +127,51 @@ def format_number(n: float) -> str:
     return f"${n:.2f}"
 
 
-def format_report(results_1d: list, results_4h: list) -> str:
-    """生成报告"""
+def format_report(results_1d: list, results_4h: list, prev: dict) -> str:
+    """生成报告（只输出双重确认，附带上次对比）"""
     now = datetime.now(tz=None).strftime("%Y-%m-%d %H:%M UTC")
     lines = [
         f"🔍 **OI 异动扫描** — {now}\n",
-        f"筛选条件: OI变化 > {OI_CHANGE_MIN}% & 价格波动 < {PRICE_CHANGE_MAX}%",
-        f"最小OI: {format_number(MIN_OI_USD)} | 最小成交量: {format_number(MIN_VOL_USD)}\n",
     ]
 
     # 同时出现在1D和4H的币（双重确认）
     both = set()
     if results_1d and results_4h:
-        ids_1d = {r["instId"] for r in results_1d}
-        ids_4h = {r["instId"] for r in results_4h}
-        both = ids_1d & ids_4h
+        both = {r["instId"] for r in results_1d} & {r["instId"] for r in results_4h}
 
     if both:
         lines.append("🔥 **双重确认（1D + 4H 同时触发）**")
         for instId in both:
-            # 取1D的数据作为主数据
             r = next(x for x in results_1d if x["instId"] == instId)
             fr = r["fundingRate"]
             fr_icon = "🟢" if fr < 0 else "⚪" if fr < 0.01 else "🔴"
+
+            # 与上次扫描对比
+            delta_str = ""
+            if instId in prev:
+                prev_price = prev[instId]["price"]
+                price_diff = r["last"] - prev_price
+                price_diff_pct = (price_diff / prev_price) * 100 if prev_price else 0
+                prev_oi = prev[instId]["deltaOiPct"]
+                oi_diff = r["deltaOiPct"] - prev_oi
+
+                if abs(price_diff_pct) < 0.1:
+                    trend = "➡️ 价格持平"
+                elif price_diff_pct > 0:
+                    trend = f"📈 +${price_diff:.4f} (+{price_diff_pct:.2f}%)"
+                else:
+                    trend = f"📉 ${price_diff:.4f} ({price_diff_pct:.2f}%)"
+
+                oi_trend = f"+{oi_diff:.1f}%" if oi_diff >= 0 else f"{oi_diff:.1f}%"
+                delta_str = f"\n     📊 较上次: {trend} | OI变化: {oi_trend}"
+            else:
+                delta_str = "\n     📊 首次出现"
+
             lines.append(
                 f"  ⚡ **{r['instId']}** — ${r['last']:.4f}\n"
                 f"     OI: {format_number(r['oiUsd'])} ({r['deltaOiPct']:+.1f}%)\n"
                 f"     价格: {r['pxChgPct']:+.2f}% | 量: {format_number(r['volUsd24h'])}\n"
-                f"     资金费率: {fr_icon} {fr*100:.4f}%"
+                f"     资金费率: {fr_icon} {fr*100:.4f}%{delta_str}"
             )
     else:
         lines.append("本轮无双重确认信号")
@@ -134,6 +180,9 @@ def format_report(results_1d: list, results_4h: list) -> str:
 
 
 def main():
+    # 加载上次扫描结果
+    prev = load_prev_state()
+
     # 获取1D和4H数据
     data_1d = get_oi_data("1D")
     data_4h = get_oi_data("4H")
@@ -143,8 +192,11 @@ def main():
     results_4h = filter_signal(data_4h)
 
     # 生成报告
-    report = format_report(results_1d, results_4h)
+    report = format_report(results_1d, results_4h, prev)
     print(report)
+
+    # 保存本次结果供下次对比
+    save_state(results_1d, results_4h)
 
 
 if __name__ == "__main__":
