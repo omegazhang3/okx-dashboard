@@ -22,11 +22,14 @@ CONFIG_FILE = SCRIPT_DIR / "oi-scanner.env"
 def load_config() -> dict:
     """从 .env 文件加载配置"""
     defaults = {
-        "OI_CHANGE_MIN": 10,
+        "OI_CHANGE_MIN": 50,
         "PRICE_CHANGE_MAX": 5.0,
-        "MIN_OI_USD": 20_000_000,
-        "MIN_VOL_USD": 5_000_000,
-        "TOP_N": 10,
+        "MIN_OI_USD": 100_000_000,
+        "MIN_VOL_USD": 10_000_000,
+        "TOP_N": 5,
+        "MIN_SCORE": 20,
+        "FUNDING_RATE_FILTER": "yes",
+        "CONSECUTIVE_CONFIRM": "yes",
         "SCAN_INTERVAL": 300,
     }
     if CONFIG_FILE.exists():
@@ -68,6 +71,9 @@ MIN_OI_USD = int(cfg["MIN_OI_USD"])
 MIN_VOL_USD = int(cfg["MIN_VOL_USD"])
 TOP_N = cfg["TOP_N"]
 SCAN_INTERVAL = int(cfg["SCAN_INTERVAL"])
+MIN_SCORE = int(cfg["MIN_SCORE"])
+FUNDING_RATE_FILTER = cfg["FUNDING_RATE_FILTER"].lower() == "yes"
+CONSECUTIVE_CONFIRM = cfg["CONSECUTIVE_CONFIRM"].lower() == "yes"
 
 # Telegram 配置从 /opt/data/.env 读取
 _main_env = load_env_file("/opt/data/.env")
@@ -77,6 +83,7 @@ TG_CHAT_ID = _main_env.get("TELEGRAM_HOME_CHANNEL", "")
 HOME = os.environ.get("HOME", "/opt/data/home")
 OKX_CMD = f"HOME={HOME} okx"
 STATE_FILE = "/tmp/oi-scanner-state.json"
+PREV_SIGNALS_FILE = "/tmp/oi-scanner-prev-signals.json"
 CME_STATE_FILE = "/tmp/cme-crypto-listings.json"
 CME_CHECK_INTERVAL = 3600  # CME 每小时检查一次（上架是罕见事件）
 
@@ -266,6 +273,24 @@ def save_state(results_1d: list, results_4h: list):
         json.dump(state, f, indent=2)
 
 
+def load_prev_signals() -> set:
+    """加载上次扫描的双重确认信号"""
+    if os.path.exists(PREV_SIGNALS_FILE):
+        try:
+            with open(PREV_SIGNALS_FILE, "r") as f:
+                data = json.load(f)
+                return set(data.get("signals", []))
+        except (json.JSONDecodeError, IOError):
+            pass
+    return set()
+
+
+def save_prev_signals(signals: set):
+    """保存本次双重确认信号"""
+    with open(PREV_SIGNALS_FILE, "w") as f:
+        json.dump({"signals": sorted(signals), "timestamp": datetime.now(tz=None).isoformat()}, f)
+
+
 def parse_oi_change_table(output: str) -> list:
     """解析 oi-change 表格输出"""
     lines = output.strip().split("\n")
@@ -307,16 +332,29 @@ def get_oi_data(bar: str = "1D") -> list:
 
 
 def filter_signal(data: list) -> list:
-    """筛选：OI上升 + 价格横盘"""
+    """筛选：OI上升 + 价格横盘 + 评分 + 资金费率"""
     results = []
     for row in data:
         oi_up = row["deltaOiPct"] > OI_CHANGE_MIN
         price_flat = abs(row["pxChgPct"]) < PRICE_CHANGE_MAX
 
-        if oi_up and price_flat:
-            row["signal"] = "OI up + flat"
-            row["score"] = row["deltaOiPct"] / max(abs(row["pxChgPct"]), 0.1)
-            results.append(row)
+        if not (oi_up and price_flat):
+            continue
+
+        # 计算评分
+        score = row["deltaOiPct"] / max(abs(row["pxChgPct"]), 0.1)
+        row["score"] = score
+
+        # 评分过滤
+        if score < MIN_SCORE:
+            continue
+
+        # 资金费率过滤（只推送负费率 = 空头积累）
+        if FUNDING_RATE_FILTER and row.get("fundingRate", 0) >= 0:
+            continue
+
+        row["signal"] = "OI up + flat"
+        results.append(row)
 
     results.sort(key=lambda x: x["score"], reverse=True)
     return results[:TOP_N]
@@ -435,6 +473,31 @@ def main():
 
     # 生成报告
     report = format_report(results_1d, results_4h, prev)
+
+    # 连续确认过滤
+    if CONSECUTIVE_CONFIRM and report:
+        prev_signals = load_prev_signals()
+        # 获取本次双重确认的币种
+        both = set()
+        if results_1d and results_4h:
+            both = {r["instId"] for r in results_1d} & {r["instId"] for r in results_4h}
+        # 只保留上次也出现的信号
+        confirmed = both & prev_signals
+        if not confirmed:
+            print(f"[{datetime.now()}] Signals exist but no consecutive confirmation, skipping")
+            save_prev_signals(both)
+            save_state(results_1d, results_4h)
+            mark_scanned()
+            return
+        # 重新生成只包含确认信号的报告
+        report = format_report(results_1d, results_4h, prev)
+        save_prev_signals(both)
+    elif report:
+        # 连续确认关闭时，正常保存信号
+        both = set()
+        if results_1d and results_4h:
+            both = {r["instId"] for r in results_1d} & {r["instId"] for r in results_4h}
+        save_prev_signals(both)
 
     # 有信号才推送，无信号静默
     if report:
