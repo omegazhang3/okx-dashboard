@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-OI 异动扫描器 — 找出「持仓量上升 + 价格横盘」的潜在待涨币
+OI 异动扫描器 + CME 上架监控
 纯脚本运行，有信号时直接推送 Telegram，无信号时静默退出
 配置文件: /opt/data/scripts/oi-scanner.env
 """
@@ -9,6 +9,7 @@ import subprocess
 import json
 import os
 import urllib.request
+import re
 import urllib.parse
 from datetime import datetime
 from pathlib import Path
@@ -76,6 +77,14 @@ TG_CHAT_ID = _main_env.get("TELEGRAM_HOME_CHANNEL", "")
 HOME = os.environ.get("HOME", "/opt/data/home")
 OKX_CMD = f"HOME={HOME} okx"
 STATE_FILE = "/tmp/oi-scanner-state.json"
+CME_STATE_FILE = "/tmp/cme-crypto-listings.json"
+CME_CHECK_INTERVAL = 3600  # CME 每小时检查一次（上架是罕见事件）
+
+# 已知 CME 加密货币期货产品（2026年5月）
+KNOWN_CME_PRODUCTS = {
+    "Bitcoin", "Ether", "Ethereum", "Solana", "XRP", "Ripple",
+    "Cardano", "Chainlink", "Lumens", "Stellar", "Avalanche", "Sui",
+}
 
 
 def send_telegram(text: str) -> bool:
@@ -97,6 +106,126 @@ def send_telegram(text: str) -> bool:
     except Exception as e:
         print(f"Telegram send failed: {e}")
         return False
+
+
+def load_cme_state() -> dict:
+    """加载 CME 产品状态"""
+    if os.path.exists(CME_STATE_FILE):
+        try:
+            with open(CME_STATE_FILE, "r") as f:
+                return json.load(f)
+        except (json.JSONDecodeError, IOError):
+            pass
+    return {"products": list(KNOWN_CME_PRODUCTS), "last_check": None}
+
+
+def save_cme_state(products: set):
+    """保存 CME 产品状态"""
+    state = {
+        "products": sorted(products),
+        "last_check": datetime.now(tz=None).isoformat(),
+    }
+    with open(CME_STATE_FILE, "w") as f:
+        json.dump(state, f, indent=2, ensure_ascii=False)
+
+
+def should_check_cme() -> bool:
+    """检查是否到了 CME 扫描时间"""
+    state = load_cme_state()
+    last = state.get("last_check")
+    if not last:
+        return True
+    try:
+        elapsed = (datetime.now(tz=None) - datetime.fromisoformat(last)).total_seconds()
+        return elapsed >= CME_CHECK_INTERVAL
+    except (ValueError, TypeError):
+        return True
+
+
+def fetch_cme_crypto_page() -> str:
+    """通过 r.jina.ai 抓取 CME 加密货币产品页"""
+    url = "https://r.jina.ai/https://www.cmegroup.com/markets/cryptocurrencies.html"
+    try:
+        req = urllib.request.Request(url, headers={
+            "User-Agent": "Mozilla/5.0",
+            "Accept": "text/plain",
+        })
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return resp.read().decode("utf-8", errors="replace")
+    except Exception as e:
+        print(f"CME page fetch failed: {e}")
+        return ""
+
+def extract_cme_products(page_text: str) -> set:
+    """从 CME 页面 tab 列表提取期货产品名称（最可靠的方法）"""
+    products = set()
+
+    # 从 Single Asset tab 列表提取 — "*   Bitcoin\n*   Ether\n*   Solana..."
+    # 这是 CME 页面上最可靠的产品来源
+    tab_section = re.search(
+        r"Single\s+Asset(.*?)Explore all futures",
+        page_text, re.IGNORECASE | re.DOTALL
+    )
+    if tab_section:
+        block = tab_section.group(1)
+        for name in re.findall(r"^\*\s+([A-Za-z]+)", block, re.MULTILINE):
+            name = name.strip()
+            skip = {"Featured", "Single", "Multi", "Asset", "Volatility", "View", "Tradable", "Newly", "Listed"}
+            if name and name not in skip and len(name) > 2:
+                products.add(name)
+
+    # 从 Micro 产品补充 — "Micro Bitcoin Futures", "Micro SOL Futures"
+    for name in re.findall(r"Micro\s+([A-Za-z]+)\s+Futures", page_text):
+        name = name.strip()
+        if len(name) > 2:
+            products.add(name)
+
+    return products
+
+
+def check_cme_listings() -> str:
+    """检查 CME 新上架产品，返回报告（空字符串=无新发现）"""
+    if not should_check_cme():
+        return ""
+
+    state = load_cme_state()
+    known = set(state.get("products", []))
+
+    page_text = fetch_cme_crypto_page()
+    if not page_text:
+        return ""
+
+    current = extract_cme_products(page_text)
+    if not current:
+        print("No products extracted from CME page")
+        save_cme_state(known)  # 更新检查时间，避免反复失败重试
+        return ""
+
+    # 合并已知和当前（CME 页面可能不列出所有产品）
+    all_known = known | KNOWN_CME_PRODUCTS
+    new_products = current - all_known
+
+    # 保存当前状态
+    save_cme_state(all_known | current)
+
+    if not new_products:
+        print(f"[{datetime.now()}] CME check: no new products (known: {len(all_known)})")
+        return ""
+
+    now = datetime.now(tz=None).strftime("%Y-%m-%d %H:%M UTC")
+    lines = [
+        f"🏦 *CME 新上架期货* — {now}",
+        "",
+        "以下加密货币新增 CME 期货合约：",
+    ]
+    for p in sorted(new_products):
+        lines.append(f"  🆕 *{p}*")
+    lines.extend([
+        "",
+        "⚡ 机构入场通道已开启，关注后续价格走势",
+        "📊 CME 期货 = 机构合规交易 = 可能的 ETF 前兆",
+    ])
+    return "\n".join(lines)
 
 
 def run_okx(args: str) -> str:
@@ -311,11 +440,20 @@ def main():
     if report:
         ok = send_telegram(report)
         if ok:
-            print(f"[{datetime.now()}] Pushed to Telegram")
+            print(f"[{datetime.now()}] Pushed OI signals to Telegram")
         else:
             print(report)
     else:
         print(f"[{datetime.now()}] No dual-confirmed signals, skipping")
+
+    # CME 新上架检查（每小时一次）
+    cme_report = check_cme_listings()
+    if cme_report:
+        ok = send_telegram(cme_report)
+        if ok:
+            print(f"[{datetime.now()}] Pushed CME listing alert to Telegram")
+        else:
+            print(cme_report)
 
     # 保存本次结果供下次对比
     save_state(results_1d, results_4h)
