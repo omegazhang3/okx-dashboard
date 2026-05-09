@@ -1,12 +1,17 @@
 # OKX Trading Dashboard
 
-实时加密货币交易看板，集成 OKX 交易所数据、技术分析、OI 异动监控和 CME 期货上架预警。
+实时加密货币交易看板，集成技术分析、OI 异动监控和 CME 期货上架预警。
+A real-time crypto trading dashboard with technical analysis, OI anomaly detection, and CME futures listing alerts.
 
-A real-time crypto trading dashboard with OKX exchange data, technical analysis, OI anomaly detection, and CME futures listing alerts.
+[**🇨🇳 中文**](#-中文) | [**🇺🇸 English**](#-english)
 
 ---
 
-## 中文
+<a id="-中文"></a>
+
+## 🇨🇳 中文
+
+[⬆ 回到顶部](#okx-trading-dashboard) | [Switch to English 🇺🇸](#-english)
 
 ### 功能特性
 
@@ -161,7 +166,11 @@ TELEGRAM_HOME_CHANNEL=your_chat_id
 
 ---
 
-## English
+<a id="-english"></a>
+
+## 🇺🇸 English
+
+[⬆ Back to top](#okx-trading-dashboard) | [切换中文 🇨🇳](#-中文)
 
 ### Features
 
