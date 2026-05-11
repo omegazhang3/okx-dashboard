@@ -43,6 +43,14 @@ A real-time crypto trading dashboard with technical analysis, OI anomaly detecti
 - **Telegram Bot API** — 直接调用，无需中间服务
 - **智能过滤** — 只有实际信号才推送，避免噪音
 
+#### 📰 加密市场每日简报
+
+- **多源数据聚合** — CoinMarketCap + CoinGlass + CoinDesk + Polymarket
+- **结构化分析** — 🔴高优先级 🟡中优先级 🟢观察列表 ⚠️风险提示
+- **Scrapling 抓取** — 绕过 Cloudflare，支持 JS 渲染页面
+- **Jina Reader 备用** — Scrapling 失败时自动降级
+- **定时推送** — 每日北京时间 7:30 自动发送 Telegram
+
 ### 技术栈
 
 - **前端**: Next.js 16 + TypeScript + Tailwind CSS + Recharts
@@ -82,7 +90,8 @@ okx-dashboard/
 ├── scripts/
 │   ├── oi-scanner.py               # OI 异动扫描 + CME 监控
 │   ├── oi-scanner.env              # 扫描参数配置
-│   └── oi-scanner-loop.sh          # 后台循环执行
+│   ├── oi-scanner-loop.sh          # 后台循环执行
+│   └── crypto_daily_report.py      # 加密市场每日简报
 └── README.md
 ```
 
@@ -125,6 +134,23 @@ bash scripts/oi-scanner-loop.sh
 ```bash
 # 使用 Cloudflare Quick Tunnel
 /tmp/cloudflared tunnel --url http://localhost:3000
+```
+
+#### 加密市场每日简报
+
+```bash
+# 安装 Scrapling（首次使用）
+pip install "scrapling[all]"
+scrapling install
+
+# 手动运行一次
+python3 scripts/crypto_daily_report.py
+
+# 输出格式：
+# 🔴 高优先级信号 — 行情异动、合约信号、OI异动
+# 🟡 中优先级 — 新闻、中等涨幅
+# 🟢 观察列表 — 温和涨幅
+# ⚠️ 风险提示 — 爆仓、恐惧贪婪指数
 ```
 
 ### API 接口
@@ -204,6 +230,14 @@ TELEGRAM_HOME_CHANNEL=your_chat_id
 - **Smart Filtering** — Only sends messages when actual signals are detected, no spam
 - **Zero LLM Cost** — Entire notification pipeline is pure Python, no LLM calls needed
 
+#### 📰 Crypto Daily Report
+
+- **Multi-Source Aggregation** — CoinMarketCap + CoinGlass + CoinDesk + Polymarket
+- **Structured Analysis** — 🔴High Priority 🟡Medium 🟢Watchlist ⚠️Risk Alerts
+- **Scrapling Scraping** — Bypasses Cloudflare, supports JS-rendered pages
+- **Jina Reader Fallback** — Auto-degrades when Scrapling fails
+- **Scheduled Push** — Daily at 7:30 AM Beijing Time via Telegram
+
 ### Tech Stack
 
 - **Frontend**: Next.js 16 + TypeScript + Tailwind CSS + Recharts
@@ -243,7 +277,8 @@ okx-dashboard/
 ├── scripts/
 │   ├── oi-scanner.py               # OI anomaly scanner + CME monitor
 │   ├── oi-scanner.env              # Scanner configuration
-│   └── oi-scanner-loop.sh          # Background daemon loop
+│   ├── oi-scanner-loop.sh          # Background daemon loop
+│   └── crypto_daily_report.py      # Crypto daily report (Scrapling)
 └── README.md
 ```
 
@@ -286,6 +321,23 @@ bash scripts/oi-scanner-loop.sh
 ```bash
 # Use Cloudflare Quick Tunnel
 /tmp/cloudflared tunnel --url http://localhost:3000
+```
+
+#### Crypto Daily Report
+
+```bash
+# Install Scrapling (first time)
+pip install "scrapling[all]"
+scrapling install
+
+# Run once
+python3 scripts/crypto_daily_report.py
+
+# Output format:
+# 🔴 High Priority — Price spikes, contract signals, OI anomalies
+# 🟡 Medium — News, moderate gains
+# 🟢 Watchlist — Steady climbers
+# ⚠️ Risk Alerts — Liquidations, fear & greed index
 ```
 
 ### API Endpoints
